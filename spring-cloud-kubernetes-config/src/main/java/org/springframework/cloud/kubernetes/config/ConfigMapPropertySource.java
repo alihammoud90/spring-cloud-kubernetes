@@ -17,6 +17,15 @@
 
 package org.springframework.cloud.kubernetes.config;
 
+import io.fabric8.kubernetes.api.model.ConfigMap;
+import io.fabric8.kubernetes.client.KubernetesClient;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.springframework.beans.factory.config.YamlPropertiesFactoryBean;
+import org.springframework.boot.yaml.SpringProfileDocumentMatcher;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.util.StringUtils;
+
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.util.HashMap;
@@ -24,16 +33,6 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.function.Function;
 import java.util.stream.Collectors;
-
-import io.fabric8.kubernetes.api.model.ConfigMap;
-import io.fabric8.kubernetes.client.KubernetesClient;
-
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.springframework.beans.factory.config.YamlPropertiesFactoryBean;
-import org.springframework.boot.yaml.SpringProfileDocumentMatcher;
-import org.springframework.core.io.ByteArrayResource;
-import org.springframework.util.StringUtils;
 
 public class ConfigMapPropertySource extends KubernetesPropertySource {
     private static final Log LOG = LogFactory.getLog(ConfigMapPropertySource.class);
@@ -43,6 +42,8 @@ public class ConfigMapPropertySource extends KubernetesPropertySource {
     private static final String APPLICATION_PROPERTIES = "application.properties";
 
     private static final String PREFIX = "configmap";
+
+    private static final String GLOBAL_APPLICATION_YML = "application";
 
 	public ConfigMapPropertySource(KubernetesClient client, String name, ConfigMapConfigProperties config) {
 		this(client, name, null, config);
@@ -71,9 +72,27 @@ public class ConfigMapPropertySource extends KubernetesPropertySource {
         Map<String, String> result = new HashMap<>();
 		if (config.isEnableApi()) {
 			try {
+				ConfigMap mapGlobal = StringUtils.isEmpty(namespace)
+					? client.configMaps().withName(GLOBAL_APPLICATION_YML).get()
+					: client.configMaps().inNamespace(namespace).withName(GLOBAL_APPLICATION_YML).get();
+
 				ConfigMap map = StringUtils.isEmpty(namespace)
 					? client.configMaps().withName(name).get()
 					: client.configMaps().inNamespace(namespace).withName(name).get();
+
+				if (mapGlobal != null) {
+					for (Map.Entry<String, String> entry : mapGlobal.getData().entrySet()) {
+						String key = entry.getKey();
+						String value = entry.getValue();
+						if (key.equals(APPLICATION_YAML) || key.equals(APPLICATION_YML)) {
+							result.putAll(yamlParserGenerator(profiles).andThen(PROPERTIES_TO_MAP).apply(value));
+						} else if (key.equals(APPLICATION_PROPERTIES)) {
+							result.putAll(KEY_VALUE_TO_PROPERTIES.andThen(PROPERTIES_TO_MAP).apply(value));
+						} else {
+							result.put(key, value);
+						}
+					}
+				}
 
 				if (map != null) {
 					for (Map.Entry<String, String> entry : map.getData().entrySet()) {
@@ -98,6 +117,8 @@ public class ConfigMapPropertySource extends KubernetesPropertySource {
 
 		return result;
     }
+
+
 
     private static Map<String, Object> asObjectMap(Map<String, String> source) {
         return source.entrySet()
